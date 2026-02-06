@@ -1,6 +1,6 @@
 use axum::{
     extract::{Form, State},
-    response::{Html, Redirect, IntoResponse, Response},
+    response::{Html, Redirect, IntoResponse},
     routing::{get, post},
     Router,
 };
@@ -44,7 +44,7 @@ async fn main() {
     conn_app.execute_batch(include_str!("../schema.sql")).expect("Schema failed");
 
     // OLDER STORE: 0.10 doesn't need .into() or async conversion
-    let session_store = RusqliteStore::new(conn_sessions);
+    let session_store = RusqliteStore::new(conn_sessions.into());
     session_store.migrate().await.unwrap();
 
     let session_layer = SessionManagerLayer::new(session_store)
@@ -88,16 +88,38 @@ async fn show_login() -> impl IntoResponse {
     Html(LoginTemplate { error: None }.render().unwrap())
 }
 
-async fn login(session: Session, State(state): State<AppState>, Form(payload): Form<AuthPayload>) -> impl IntoResponse {
-    let conn = state.conn.lock().unwrap();
-    if let Ok(user) = db::get_user_by_username(&conn, &payload.username) {
-        let hash: String = conn.query_row("SELECT password_hash FROM users WHERE id = ?1", [user.id], |row| row.get(0)).unwrap_or_default();
-        if auth::verify_password(&payload.password, &hash) {
-            session.insert("user_id", user.id).await.unwrap();
-            session.insert("username", user.username).await.unwrap();
-            return Redirect::to("/").into_response();
+async fn login(
+    session: Session,
+    State(state): State<AppState>,
+               Form(payload): Form<AuthPayload>
+) -> impl IntoResponse {
+    // 1. Perform DB work in a limited scope
+    let user_data = {
+        let conn = state.conn.lock().unwrap();
+        if let Ok(user) = db::get_user_by_username(&conn, &payload.username) {
+            let hash: String = conn.query_row(
+                "SELECT password_hash FROM users WHERE id = ?1",
+                [user.id],
+                |row| row.get(0)
+            ).unwrap_or_default();
+
+            if auth::verify_password(&payload.password, &hash) {
+                Some((user.id, user.username))
+            } else {
+                None
+            }
+        } else {
+            None
         }
+    }; // Lock is dropped here automatically
+
+    // 2. Perform Async work after lock is dropped
+    if let Some((id, name)) = user_data {
+        session.insert("user_id", id).await.unwrap();
+        session.insert("username", name).await.unwrap();
+        return Redirect::to("/").into_response();
     }
+
     Redirect::to("/login?error=invalid").into_response()
 }
 
@@ -105,10 +127,21 @@ async fn show_register() -> impl IntoResponse {
     Html(RegisterTemplate { error: None }.render().unwrap())
 }
 
-async fn register(session: Session, State(state): State<AppState>, Form(payload): Form<AuthPayload>) -> impl IntoResponse {
-    let conn = state.conn.lock().unwrap();
+async fn register(
+    session: Session,
+    State(state): State<AppState>,
+                  Form(payload): Form<AuthPayload>
+) -> impl IntoResponse {
     let hash = auth::hash_password(&payload.password).unwrap();
-    if let Ok(uid) = db::create_user(&conn, &payload.username, &hash) {
+
+    // 1. Scope the DB lock
+    let result = {
+        let conn = state.conn.lock().unwrap();
+        db::create_user(&conn, &payload.username, &hash)
+    }; // Lock dropped here
+
+    // 2. Handle session async
+    if let Ok(uid) = result {
         session.insert("user_id", uid).await.unwrap();
         session.insert("username", payload.username).await.unwrap();
         Redirect::to("/").into_response()
