@@ -36,3 +36,9 @@ pub struct CreateProjectForm {
     pub name: String,
     pub description: String,
 }
+
+#[derive(serde::Deserialize)]
+pub struct UpdateProjectForm {
+    pub name: String,
+    pub description: String,
+}

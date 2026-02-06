@@ -54,3 +54,19 @@ pub fn create_project(conn: &Connection, user_id: i64, name: &str, desc: Option<
     )?;
     Ok(conn.last_insert_rowid())
 }
+
+pub fn update_project(conn: &Connection, user_id: i64, project_id: i64, name: &str, desc: Option<&str>) -> Result<()> {
+    conn.execute(
+        "UPDATE projects SET name = ?1, description = ?2 WHERE id = ?3 AND user_id = ?4",
+        params![name, desc, project_id, user_id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_project(conn: &Connection, user_id: i64, project_id: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM projects WHERE id = ?1 AND user_id = ?2",
+        params![project_id, user_id],
+    )?;
+    Ok(())
+}

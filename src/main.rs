@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Form, State},
+    extract::{Form, State, Path},
     response::{Html, Redirect, IntoResponse},
     routing::{get, post},
     Router,
@@ -16,7 +16,7 @@ mod db;
 mod models;
 mod auth;
 
-use models::{CreateProjectForm, AuthPayload};
+use models::{CreateProjectForm, AuthPayload, UpdateProjectForm};
 
 #[derive(Clone)]
 struct AppState {
@@ -61,6 +61,8 @@ async fn main() {
     .route("/logout", get(logout))
     .route("/login", get(show_login).post(login))
     .route("/register", get(show_register).post(register))
+    .route("/projects/:id/edit", post(edit_project))
+    .route("/projects/:id/delete", post(remove_project))
     .layer(session_layer)
     .with_state(state);
 
@@ -77,6 +79,10 @@ async fn home(session: Session, State(state): State<AppState>) -> impl IntoRespo
     if let (Some(uid), Some(name)) = (user_id, username) {
         let conn = state.conn.lock().unwrap();
         let projects = db::get_projects_for_user(&conn, uid).unwrap_or_default();
+
+        // Debug line: This will show in your terminal
+        println!("User {} (ID: {}) has {} projects", name, uid, projects.len());
+
         let template = IndexTemplate { projects, username: name };
         Html(template.render().unwrap()).into_response()
     } else {
@@ -155,12 +161,51 @@ async fn logout(session: Session) -> impl IntoResponse {
     Redirect::to("/login")
 }
 
-async fn create_project(session: Session, State(state): State<AppState>, Form(payload): Form<CreateProjectForm>) -> impl IntoResponse {
+async fn create_project(
+    session: Session,
+    State(state): State<AppState>,
+                        Form(payload): Form<CreateProjectForm>
+) -> impl IntoResponse {
     let user_id: Option<i64> = session.get("user_id").await.unwrap();
+
     if let Some(uid) = user_id {
         let conn = state.conn.lock().unwrap();
         let desc = if payload.description.trim().is_empty() { None } else { Some(payload.description.as_str()) };
-        let _ = db::create_project(&conn, uid, &payload.name, desc);
+
+        // Change 'let _' to a result check so we can see errors
+        match db::create_project(&conn, uid, &payload.name, desc) {
+            Ok(new_id) => println!("✅ Project created with ID: {}", new_id),
+            Err(e) => eprintln!("❌ Database error creating project: {:?}", e),
+        }
+    } else {
+        eprintln!("❌ No user_id found in session!");
+    }
+
+    Redirect::to("/")
+}
+
+async fn edit_project(
+    session: Session,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Form(payload): Form<UpdateProjectForm>,
+) -> impl IntoResponse {
+    if let Some(uid) = session.get::<i64>("user_id").await.unwrap() {
+        let conn = state.conn.lock().unwrap();
+        let desc = if payload.description.trim().is_empty() { None } else { Some(payload.description.as_str()) };
+        let _ = db::update_project(&conn, uid, id, &payload.name, desc);
+    }
+    Redirect::to("/")
+}
+
+async fn remove_project(
+    session: Session,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    if let Some(uid) = session.get::<i64>("user_id").await.unwrap() {
+        let conn = state.conn.lock().unwrap();
+        let _ = db::delete_project(&conn, uid, id);
     }
     Redirect::to("/")
 }
